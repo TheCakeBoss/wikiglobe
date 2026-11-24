@@ -10,6 +10,14 @@ import { getSummary, wikipediaUrl, type Place } from './wiki';
 export interface GlobeOptions {
   /** Called when the user chooses to open a place's article inside the app. */
   onOpen: (title: string) => void;
+  /** Called when a pin is clicked (after the camera starts flying to it). */
+  onSelect?: (title: string) => void;
+}
+
+/** A pin: a place plus optional relevance weight (0..1) and context sentence. */
+export interface GlobePlace extends Place {
+  weight?: number;
+  snippet?: string;
 }
 
 maplibregl.setWorkerUrl(workerUrl);
@@ -21,7 +29,7 @@ const EMPTY: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: 
 export class Globe {
   private map: maplibregl.Map;
   private ready: Promise<void>;
-  private places: Place[] = [];
+  private places: GlobePlace[] = [];
   private hoverId: number | null = null;
   private popup = new maplibregl.Popup({
     closeButton: false,
@@ -77,14 +85,17 @@ export class Globe {
       id: 'places',
       type: 'circle',
       source: 'places',
+      layout: { 'circle-sort-key': ['get', 'w'] },
       paint: {
+        // Size and opacity scale with relevance (`w`, 0..1).
         'circle-radius': [
           'interpolate', ['linear'], ['zoom'],
-          1, ['case', ['boolean', ['feature-state', 'hover'], false], 7, 4.5],
-          8, ['case', ['boolean', ['feature-state', 'hover'], false], 11, 7],
+          1, ['+', ['*', ['get', 'w'], 5], ['case', ['boolean', ['feature-state', 'hover'], false], 6, 3]],
+          8, ['+', ['*', ['get', 'w'], 7], ['case', ['boolean', ['feature-state', 'hover'], false], 9, 5]],
         ],
         'circle-color': ['case', ['boolean', ['feature-state', 'hover'], false], '#ff6a3d', '#d9381e'],
-        'circle-opacity': 0.9,
+        'circle-opacity': ['case', ['boolean', ['feature-state', 'hover'], false], 1, ['+', 0.45, ['*', ['get', 'w'], 0.5]]],
+        'circle-stroke-opacity': ['+', 0.6, ['*', ['get', 'w'], 0.4]],
         'circle-stroke-color': '#ffffff',
         'circle-stroke-width': ['case', ['boolean', ['feature-state', 'hover'], false], 2.5, 1.25],
       },
@@ -117,7 +128,7 @@ export class Globe {
   }
 
   /** Replace the pins without moving the camera. */
-  async setPlaces(places: Place[], primary: { lat: number; lon: number } | undefined) {
+  async setPlaces(places: GlobePlace[], primary: { lat: number; lon: number } | undefined) {
     await this.ready;
     this.clearSticky();
     this.unhover();
@@ -128,7 +139,7 @@ export class Globe {
         type: 'Feature',
         id: i,
         geometry: { type: 'Point', coordinates: [p.lon, p.lat] },
-        properties: { title: p.title },
+        properties: { title: p.title, w: p.weight ?? 0.5 },
       })),
     });
     (this.map.getSource('primary') as GeoJSONSource).setData(
@@ -209,6 +220,7 @@ export class Globe {
     this.setHover(id);
     this.showCard(id, true);
     this.map.flyTo({ center: [p.lon, p.lat], zoom: Math.max(this.map.getZoom(), 4), speed: 1.2 });
+    this.opts.onSelect?.(p.title);
   }
 
   private clearSticky() {
@@ -220,54 +232,45 @@ export class Globe {
 
   private showCard(id: number, sticky: boolean) {
     const p = this.places[id];
-    const card = document.createElement('article');
-    card.className = 'card';
-    const h = document.createElement('h3');
-    h.textContent = p.title;
-    const body = document.createElement('div');
-    body.className = 'card-body';
-    body.innerHTML = '<p class="card-loading">Loading…</p>';
-    card.append(h, body);
+    const el = <K extends keyof HTMLElementTagNameMap>(tag: K, cls: string, text?: string) => {
+      const e = document.createElement(tag);
+      e.className = cls;
+      if (text) e.textContent = text;
+      return e;
+    };
+    const card = el('article', 'card');
+    const h = el('h3', '', p.title);
+    const desc = el('p', 'card-desc');
+    const extract = el('div', 'card-extract');
+    extract.append(el('p', 'card-loading', 'Loading…'));
+    card.append(h, desc);
+    // How the article uses this place: known locally, so it shows immediately.
+    if (p.snippet) card.append(el('p', 'card-snippet', p.snippet));
+    card.append(extract);
     if (sticky) card.append(this.cardActions(p.title));
+    else card.append(el('p', 'card-hint', 'Click the pin to jump to it in the article'));
     this.popup.setLngLat([p.lon, p.lat]).setDOMContent(card).addTo(this.map);
 
+    const reanchor = () => { if (this.hoverId === id) this.popup.setLngLat([p.lon, p.lat]); };
     getSummary(p.title).then(
       (s) => {
         if (this.hoverId !== id) return; // moved on
-        body.replaceChildren();
         if (s.thumbnail) {
-          const img = document.createElement('img');
+          const img = el('img', 'card-thumb');
           img.src = s.thumbnail.source;
           img.alt = '';
-          img.className = 'card-thumb';
           img.width = Math.min(s.thumbnail.width, 96);
-          card.insertBefore(img, h);
+          img.addEventListener('load', reanchor, { once: true });
+          card.prepend(img);
         }
-        if (s.description) {
-          const d = document.createElement('p');
-          d.className = 'card-desc';
-          d.textContent = s.description;
-          body.append(d);
-        }
-        if (s.extract) {
-          const x = document.createElement('p');
-          x.className = 'card-extract';
-          x.textContent = truncate(s.extract, 260);
-          body.append(x);
-        }
-        if (!sticky) {
-          const hint = document.createElement('p');
-          hint.className = 'card-hint';
-          hint.textContent = 'Click the pin for links';
-          body.append(hint);
-        }
+        desc.textContent = s.description ?? '';
+        extract.replaceChildren();
+        if (s.extract) extract.append(el('p', '', truncate(s.extract, p.snippet ? 180 : 260)));
         // The card grew: re-run MapLibre's auto-anchoring so it isn't clipped at the edge.
-        const reanchor = () => { if (this.hoverId === id) this.popup.setLngLat([p.lon, p.lat]); };
         reanchor();
-        card.querySelector('img')?.addEventListener('load', reanchor, { once: true });
       },
       () => {
-        if (this.hoverId === id) body.innerHTML = '<p class="card-loading">No summary available.</p>';
+        if (this.hoverId === id) extract.replaceChildren(el('p', 'card-loading', 'No summary available.'));
       },
     );
   }

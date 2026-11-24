@@ -127,11 +127,10 @@ a { color: var(--link); }
   font-size: 14px;
 }
 .place-count { font-weight: 600; }
-.toggle { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); cursor: pointer; }
-.article-summary { font-family: var(--serif); font-size: 18px; line-height: 1.65; }
-.article-summary p { margin: 0 0 1em; }
-.summary-thumb { float: right; max-width: 40%; margin: 4px 0 12px 16px; border-radius: 4px; }
-.phase-note { clear: both; color: var(--muted); font-size: 13px; font-style: italic; }
+.toggle, .top-n { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); cursor: pointer; }
+.top-n input { width: 110px; accent-color: var(--accent); }
+.top-n output { min-width: 2.2em; font-variant-numeric: tabular-nums; color: var(--text); }
+.controls { position: sticky; top: 0; background: var(--bg); z-index: 2; }
 
 .globe-pane {
   position: relative;
@@ -163,6 +162,8 @@ a { color: var(--link); }
 .card h3 { margin: 0 0 2px; font-family: var(--serif); font-size: 17px; line-height: 1.25; }
 .card p { margin: 0 0 6px; }
 .card-desc { color: var(--muted); }
+.card-desc:empty { display: none; }
+.card-snippet { font-weight: 600; border-left: 3px solid var(--accent); padding-left: 8px; }
 .card-loading, .card-hint { color: var(--muted); font-size: 12px; }
 .card-hint { margin-bottom: 0 !important; clear: both; }
 .card-actions { display: flex; gap: 12px; align-items: center; clear: both; padding-top: 6px; border-top: 1px solid var(--border); }
@@ -176,6 +177,80 @@ a { color: var(--link); }
   color: #fff;
   cursor: pointer;
 }
+
+/* ---------------------------------------------------------------- article */
+.article-body {
+  container-type: inline-size;
+  font-family: var(--serif);
+  font-size: 18px;
+  line-height: 1.65;
+  overflow-wrap: break-word;
+}
+.article-body.loading { min-height: 60vh; }
+.article-body.loading::before { content: 'Loading article…'; color: var(--muted); font-family: var(--sans); font-size: 14px; }
+.article-body p { margin: 0 0 1em; }
+.article-body h2, .article-body h3, .article-body h4 { font-family: var(--serif); line-height: 1.25; clear: both; }
+.article-body h2 { font-size: 26px; margin: 1.6em 0 0.5em; padding-bottom: 4px; border-bottom: 1px solid var(--border); }
+.article-body h3 { font-size: 21px; margin: 1.4em 0 0.4em; }
+.article-body h4 { font-size: 18px; margin: 1.2em 0 0.3em; }
+.article-body a { color: var(--link); text-decoration: none; }
+.article-body a:hover { text-decoration: underline; }
+.article-body a.wl[data-place] { text-decoration: underline; text-decoration-color: rgb(217 56 30 / 0.5); text-underline-offset: 3px; }
+.article-body img { max-width: 100%; height: auto; }
+.article-body ul, .article-body ol { padding-left: 1.4em; }
+.article-body blockquote { margin: 1em 0; padding-left: 1em; border-left: 3px solid var(--border); color: #3a3833; }
+.article-body sup, .article-body sub { line-height: 0; }
+.article-body .mw-ref { font-family: var(--sans); font-size: 11px; }
+.article-body .mw-ref a { color: var(--muted); }
+.article-body .hatnote, .article-body .dablink { font-style: italic; font-size: 15px; color: var(--muted); padding-left: 1.2em; }
+
+/* figures and infobox float right on wide panes */
+.article-body figure, .article-body .infobox, .article-body .sidebar {
+  float: right;
+  clear: right;
+  max-width: min(300px, 45%);
+  margin: 4px 0 16px 20px;
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.article-body figure img { border-radius: 3px; }
+.article-body figcaption { color: var(--muted); padding-top: 4px; }
+.article-body .infobox, .article-body .sidebar {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-collapse: collapse;
+  width: 300px;
+}
+.article-body .infobox th, .article-body .infobox td { padding: 4px 8px; vertical-align: top; text-align: left; border-top: 1px solid #f0ede7; }
+.article-body .infobox caption, .article-body .infobox-title, .article-body .infobox-above { font-family: var(--serif); font-size: 17px; font-weight: 700; padding: 8px; text-align: center; }
+.article-body .infobox-header { background: #f1eee8; text-align: center !important; }
+.article-body .infobox-image { text-align: center !important; }
+.article-body .infobox ul { margin: 0; padding-left: 1.1em; }
+.article-body .infobox figure { float: none; margin: 0 auto; max-width: 100%; }
+.article-body .sidebar td, .article-body .sidebar th { padding: 3px 8px; }
+
+/* Narrow article column: the infobox goes full width instead of squeezing the prose. */
+@container (max-width: 640px) {
+  .article-body .infobox, .article-body .sidebar { float: none; width: 100%; max-width: 420px; margin: 0 auto 20px; }
+  .article-body figure { max-width: 42%; }
+}
+
+/* tables */
+.article-body table:not(.infobox):not(.sidebar) { display: block; overflow-x: auto; border-collapse: collapse; font-family: var(--sans); font-size: 14px; margin: 1em 0; }
+.article-body .wikitable th, .article-body .wikitable td { border: 1px solid var(--border); padding: 4px 8px; }
+.article-body .wikitable th { background: #f1eee8; }
+
+/* trailing sections (See also, References...) are quieter */
+.article-body [data-trailing-section] { font-size: 15px; line-height: 1.5; color: #3a3833; }
+.article-body .mw-references-wrap, .article-body .reflist, .article-body .refbegin { font-family: var(--sans); font-size: 13px; }
+.article-body .mw-references-columns, .article-body .reflist-columns { columns: 2 260px; }
+.article-body ol.references li { margin-bottom: 4px; }
+.article-error { font-family: var(--sans); color: #8a1c0c; }
+
+/* "scroll to first mention" highlight */
+@keyframes mention-flash { 0%, 60% { background: rgb(255 106 61 / 0.35); } 100% { background: transparent; } }
+.article-body a.mention-flash { animation: mention-flash 2.2s ease-out; border-radius: 3px; box-shadow: 0 0 0 3px rgb(255 106 61 / 0.25); }
 
 /* ---------------------------------------------------------------- footer */
 .credits {
@@ -195,4 +270,5 @@ a { color: var(--link); }
   .globe-pane { order: -1; position: sticky; top: var(--topbar-h); height: 45vh; z-index: 5; }
   .article-pane { height: auto; overflow: visible; max-width: none; padding: 20px 16px 40px; }
   .article-pane h1 { font-size: 28px; }
+  .controls { top: calc(var(--topbar-h) + 45vh); }
 }

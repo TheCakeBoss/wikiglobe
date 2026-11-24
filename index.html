@@ -33,15 +33,17 @@
     </main>
 
     <main id="viewer" class="viewer" hidden>
-      <section class="article-pane" aria-live="polite">
+      <section class="article-pane">
         <h1 id="article-title"></h1>
         <p id="article-desc" class="article-desc"></p>
         <div class="controls">
-          <span id="place-count" class="place-count"></span>
-          <label class="toggle"><input id="show-large" type="checkbox" /> Show countries &amp; large regions</label>
+          <span id="place-count" class="place-count" aria-live="polite"></span>
+          <label class="top-n" title="How many of the most relevant places to pin">
+            Top <input id="top-n" type="range" min="10" max="200" step="10" value="40" /> <output id="top-n-out">40</output>
+          </label>
+          <label class="toggle"><input id="show-large" type="checkbox" /> Countries &amp; large regions</label>
         </div>
-        <div id="article-summary" class="article-summary"></div>
-        <p class="phase-note">Full article text arrives in phase 2.</p>
+        <div id="article-body" class="article-body"></div>
       </section>
       <section class="globe-pane">
         <div id="globe" class="globe" tabindex="0" aria-label="Interactive globe of linked places"></div>

@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "dompurify": "^3.5.0",
     "maplibre-gl": "^6.19.0"
   },
   "devDependencies": {
