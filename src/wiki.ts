@@ -1,0 +1,235 @@
+import { ACTION_API, API_USER_AGENT, REST_API, WIKI_HOST } from './config';
+import { cacheGet, cacheSet } from './cache';
+
+export interface Coord {
+  lat: number;
+  lon: number;
+  type?: string;
+  dim?: number;
+  globe: string;
+}
+
+export interface Place {
+  title: string;
+  lat: number;
+  lon: number;
+  type?: string;
+  dim?: number;
+  /** Redirect titles the article links through (needed to match links in the HTML in phase 2). */
+  aliases?: string[];
+}
+
+export interface ArticleData {
+  /** Canonical title after redirects/normalisation. */
+  title: string;
+  primary?: { lat: number; lon: number };
+  /** Every linked article with an Earth coordinate (unfiltered). */
+  places: Place[];
+}
+
+export interface Summary {
+  title: string;
+  description?: string;
+  extract?: string;
+  thumbnail?: { source: string; width: number; height: number };
+}
+
+export class NotFoundError extends Error {}
+
+const headers = { 'Api-User-Agent': API_USER_AGENT };
+
+async function actionQuery(params: Record<string, string>, signal?: AbortSignal): Promise<any> {
+  const url = new URL(ACTION_API);
+  url.search = new URLSearchParams({ format: 'json', formatversion: '2', origin: '*', ...params }).toString();
+  const res = await fetch(url, { headers, signal });
+  if (!res.ok) throw new Error(`Wikipedia API error ${res.status}`);
+  const json = await res.json();
+  if (json.error) throw new Error(json.error.info ?? 'Wikipedia API error');
+  return json;
+}
+
+/** Accepts a title ("Gallipoli campaign", "Gallipoli_campaign") or a full Wikipedia URL. */
+export function parseTitleInput(input: string): string {
+  const s = input.trim();
+  if (!s) return '';
+  try {
+    const u = new URL(s);
+    if (/wikipedia\.org$/.test(u.hostname)) {
+      const m = u.pathname.match(/^\/wiki\/(.+)$/);
+      if (m) return decodeURIComponent(m[1]).replace(/_/g, ' ');
+      const t = u.searchParams.get('title');
+      if (t) return t.replace(/_/g, ' ');
+    }
+  } catch {
+    /* not a URL */
+  }
+  return s.replace(/_/g, ' ');
+}
+
+export const toPageParam = (title: string) => title.replace(/ /g, '_');
+export const wikipediaUrl = (title: string) => `${WIKI_HOST}/wiki/${encodeURIComponent(toPageParam(title))}`;
+
+// ---------------------------------------------------------------- autocomplete
+
+export async function opensearch(q: string, signal?: AbortSignal): Promise<string[]> {
+  const key = `os:${q.toLowerCase()}`;
+  const hit = cacheGet<string[]>(key, false);
+  if (hit) return hit;
+  const url = new URL(ACTION_API);
+  url.search = new URLSearchParams({
+    action: 'opensearch', search: q, limit: '8', namespace: '0', format: 'json', origin: '*',
+  }).toString();
+  const res = await fetch(url, { headers, signal });
+  const json = (await res.json()) as [string, string[]];
+  cacheSet(key, json[1], false);
+  return json[1];
+}
+
+// ---------------------------------------------------------------- article data
+
+const pickEarth = (coords?: Coord[]) =>
+  coords?.find((c) => (c.globe ?? 'earth').toLowerCase() === 'earth');
+
+/** Resolves the canonical title and the article's own primary coordinate. */
+async function fetchPrimary(title: string, signal?: AbortSignal) {
+  const json = await actionQuery(
+    { action: 'query', titles: title, redirects: '1', prop: 'coordinates', coprop: 'type|dim|globe' },
+    signal,
+  );
+  const page = json.query?.pages?.[0];
+  if (!page || page.missing || page.invalid) throw new NotFoundError(title);
+  const c = pickEarth(page.coordinates);
+  return { title: page.title as string, primary: c ? { lat: c.lat, lon: c.lon } : undefined };
+}
+
+/**
+ * All linked articles with coordinates, following `continue` until done.
+ * `onBatch` gets the places found so far after each response, so pins can appear
+ * before a link-heavy article (Melbourne has ~3,000 links) has finished loading.
+ */
+async function fetchLinkedPlaces(
+  title: string,
+  signal?: AbortSignal,
+  onBatch?: (placesSoFar: Place[]) => void,
+): Promise<Place[]> {
+  const pages = new Map<number, { title: string; coords: Coord[] }>();
+  const aliases = new Map<string, Set<string>>();
+
+  const collect = (): Place[] => {
+    const places: Place[] = [];
+    for (const { title: t, coords } of pages.values()) {
+      if (t === title) continue;
+      const c = pickEarth(coords); // drops Moon/Mars/etc.
+      if (!c) continue;
+      const a = aliases.get(t);
+      places.push({ title: t, lat: c.lat, lon: c.lon, type: c.type, dim: c.dim, ...(a && { aliases: [...a] }) });
+    }
+    return places;
+  };
+
+  let cont: Record<string, string> = {};
+  for (let guard = 0; guard < 50; guard++) {
+    const json = await actionQuery(
+      {
+        action: 'query',
+        generator: 'links',
+        titles: title,
+        gplnamespace: '0',
+        gpllimit: 'max',
+        // Resolves the input title if it's a redirect, and redirecting links
+        // ("Anzac Cove" -> "ANZAC Cove") so they get coordinates.
+        redirects: '1',
+        prop: 'coordinates',
+        colimit: 'max',
+        coprop: 'type|dim|globe',
+        ...cont,
+      },
+      signal,
+    );
+    for (const r of json.query?.redirects ?? []) {
+      if (!aliases.has(r.to)) aliases.set(r.to, new Set());
+      aliases.get(r.to)!.add(r.from);
+    }
+    for (const p of json.query?.pages ?? []) {
+      if (p.missing) continue;
+      const entry = pages.get(p.pageid) ?? { title: p.title as string, coords: [] as Coord[] };
+      if (p.coordinates) entry.coords.push(...p.coordinates);
+      pages.set(p.pageid, entry);
+    }
+    if (!json.continue) break;
+    cont = json.continue;
+    onBatch?.(collect());
+  }
+  return collect();
+}
+
+export interface LoadProgress {
+  title: string;
+  primary?: { lat: number; lon: number };
+  places: Place[];
+}
+
+/**
+ * Loads an article's primary coordinate and linked places. The two queries run in
+ * parallel; `onProgress` fires once the primary is known and again per batch of links.
+ */
+export async function loadArticle(
+  input: string,
+  signal?: AbortSignal,
+  onProgress?: (p: LoadProgress) => void,
+): Promise<ArticleData> {
+  const key = `art:${input.toLowerCase()}`;
+  const hit = cacheGet<ArticleData>(key);
+  if (hit) return hit;
+
+  const primaryP = fetchPrimary(input, signal);
+  let latest: Place[] = [];
+  let head: { title: string; primary?: { lat: number; lon: number } } | undefined;
+  const report = () => head && onProgress?.({ ...head, places: latest });
+  primaryP.then((h) => { head = h; report(); }, () => {});
+
+  const placesP = fetchLinkedPlaces(input, signal, (so) => {
+    const h = head;
+    latest = h ? so.filter((p) => p.title !== h.title) : so;
+    report();
+  });
+  // A missing page surfaces as NotFoundError from the primary query.
+  const [{ title, primary }, places] = await Promise.all([primaryP, placesP]);
+
+  const data: ArticleData = { title, primary, places: places.filter((p) => p.title !== title) };
+  cacheSet(key, data);
+  if (title.toLowerCase() !== input.toLowerCase()) cacheSet(`art:${title.toLowerCase()}`, data);
+  return data;
+}
+
+// ---------------------------------------------------------------- summaries
+
+const inflight = new Map<string, Promise<Summary>>();
+
+/** Page summary, fetched on demand and cached (memory + localStorage). */
+export function getSummary(title: string): Promise<Summary> {
+  const key = `sum:${title}`;
+  const hit = cacheGet<Summary>(key);
+  if (hit) return Promise.resolve(hit);
+  let p = inflight.get(key);
+  if (!p) {
+    p = fetch(`${REST_API}/page/summary/${encodeURIComponent(toPageParam(title))}`, { headers })
+      .then((r) => {
+        if (!r.ok) throw new Error(`summary ${r.status}`);
+        return r.json();
+      })
+      .then((j): Summary => {
+        const s: Summary = {
+          title: j.titles?.normalized ?? j.title ?? title,
+          description: j.description,
+          extract: j.extract,
+          thumbnail: j.thumbnail,
+        };
+        cacheSet(key, s);
+        return s;
+      })
+      .finally(() => inflight.delete(key));
+    inflight.set(key, p);
+  }
+  return p;
+}

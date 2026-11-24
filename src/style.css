@@ -1,0 +1,198 @@
+:root {
+  --bg: #fbfaf7;
+  --surface: #ffffff;
+  --text: #1d1c1a;
+  --muted: #6b6760;
+  --border: #e4e0d8;
+  --accent: #d9381e;
+  --link: #1f5fbf;
+  --globe-bg: #0d1726;
+  --topbar-h: 56px;
+  --serif: 'Charter', 'Iowan Old Style', 'Georgia', serif;
+  --sans: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  color-scheme: light;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.5 var(--sans);
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+/* Desktop viewer: fixed-height app shell, the article scrolls inside its pane and the globe stays put. */
+body:has(.viewer:not([hidden])) { height: 100vh; overflow: hidden; }
+a { color: var(--link); }
+[hidden] { display: none !important; }
+
+/* ---------------------------------------------------------------- top bar */
+.topbar {
+  height: var(--topbar-h);
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+.brand { font-family: var(--serif); font-weight: 700; font-size: 19px; color: var(--text); text-decoration: none; }
+
+/* ---------------------------------------------------------------- search */
+.search { position: relative; display: flex; gap: 8px; }
+.search-top { flex: 1; max-width: 520px; }
+.search input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+.search input:focus { outline: 2px solid var(--link); outline-offset: -1px; background: var(--surface); }
+.search button {
+  font: inherit;
+  font-weight: 600;
+  padding: 0 20px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+.suggestions {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.12);
+  z-index: 20;
+}
+.suggestions li { padding: 7px 10px; border-radius: 5px; cursor: pointer; }
+.suggestions li:hover, .suggestions li[aria-selected='true'] { background: #f1eee8; }
+
+/* ---------------------------------------------------------------- landing */
+.landing {
+  flex: 1;
+  max-width: 640px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 14vh 16px 48px;
+  text-align: center;
+}
+.landing h1 { font-family: var(--serif); font-size: clamp(28px, 5vw, 42px); line-height: 1.15; margin: 0 0 12px; }
+.lede { color: var(--muted); margin: 0 0 28px; }
+.search-hero input { padding: 14px 16px; font-size: 18px; }
+.search-hero { text-align: left; }
+.examples { margin-top: 24px; color: var(--muted); font-size: 15px; }
+
+/* ---------------------------------------------------------------- viewer */
+.viewer {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(340px, 1fr) minmax(0, 1.25fr);
+  min-height: 0;
+}
+.article-pane {
+  padding: 28px clamp(20px, 4vw, 48px) 48px;
+  overflow-y: auto;
+  height: 100%;
+  max-width: 760px;
+  width: 100%;
+  justify-self: end;
+}
+.article-pane h1 { font-family: var(--serif); font-size: 34px; line-height: 1.2; margin: 0 0 4px; }
+.article-desc { color: var(--muted); margin: 0 0 16px; }
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  align-items: center;
+  padding: 10px 0;
+  margin-bottom: 20px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+}
+.place-count { font-weight: 600; }
+.toggle { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); cursor: pointer; }
+.article-summary { font-family: var(--serif); font-size: 18px; line-height: 1.65; }
+.article-summary p { margin: 0 0 1em; }
+.summary-thumb { float: right; max-width: 40%; margin: 4px 0 12px 16px; border-radius: 4px; }
+.phase-note { clear: both; color: var(--muted); font-size: 13px; font-style: italic; }
+
+.globe-pane {
+  position: relative;
+  height: 100%;
+  background: var(--globe-bg);
+}
+.globe-pane .globe { position: absolute; inset: 0; }
+.globe:focus { outline: none; }
+.globe-status {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  max-width: min(420px, 85%);
+  padding: 14px 20px;
+  border-radius: 10px;
+  background: rgb(255 255 255 / 0.94);
+  box-shadow: 0 8px 30px rgb(0 0 0 / 0.25);
+  text-align: center;
+  font-size: 15px;
+  pointer-events: none;
+}
+.globe-status.error { color: #8a1c0c; }
+
+/* ---------------------------------------------------------------- hover card */
+.place-popup .maplibregl-popup-content { padding: 0; border-radius: 10px; overflow: hidden; box-shadow: 0 8px 28px rgb(0 0 0 / 0.25); }
+.card { padding: 12px 14px; font-family: var(--sans); font-size: 13.5px; line-height: 1.45; }
+.card-thumb { float: right; max-height: 96px; object-fit: cover; margin: 0 0 6px 10px; border-radius: 4px; }
+.card h3 { margin: 0 0 2px; font-family: var(--serif); font-size: 17px; line-height: 1.25; }
+.card p { margin: 0 0 6px; }
+.card-desc { color: var(--muted); }
+.card-loading, .card-hint { color: var(--muted); font-size: 12px; }
+.card-hint { margin-bottom: 0 !important; clear: both; }
+.card-actions { display: flex; gap: 12px; align-items: center; clear: both; padding-top: 6px; border-top: 1px solid var(--border); }
+.card-actions button {
+  font: inherit;
+  font-weight: 600;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+
+/* ---------------------------------------------------------------- footer */
+.credits {
+  padding: 10px 20px;
+  font-size: 12px;
+  color: var(--muted);
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+/* ---------------------------------------------------------------- narrow screens */
+@media (max-width: 820px) {
+  .topbar { gap: 12px; padding: 0 12px; }
+  .brand { font-size: 16px; }
+  body:has(.viewer:not([hidden])) { height: auto; overflow: visible; }
+  .viewer { display: flex; flex-direction: column; }
+  .globe-pane { order: -1; position: sticky; top: var(--topbar-h); height: 45vh; z-index: 5; }
+  .article-pane { height: auto; overflow: visible; max-width: none; padding: 20px 16px 40px; }
+  .article-pane h1 { font-size: 28px; }
+}
