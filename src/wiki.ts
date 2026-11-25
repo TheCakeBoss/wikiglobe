@@ -268,6 +268,74 @@ async function fetchArticle(input: string, onProgress: (p: LoadProgress) => void
 
 const inflight = new Map<string, Promise<Summary>>();
 
+/**
+ * Fetches summaries for many places at once (20 per request, the most TextExtracts allows),
+ * so hover cards for pins in view open fully formed instead of filling in. Fills the same
+ * cache as getSummary. Requests run one after another to stay polite to Wikipedia.
+ */
+export async function prefetchSummaries(titles: string[]): Promise<void> {
+  const todo = [...new Set(titles)].filter((t) => !cacheGet(`sum:${t}`) && !inflight.has(`sum:${t}`) && !batched.has(t));
+  for (let i = 0; i < todo.length; i += 20) {
+    const chunk = todo.slice(i, i + 20);
+    chunk.forEach((t) => batched.add(t));
+    try {
+      const json = await actionQuery({
+        action: 'query',
+        prop: 'extracts|pageimages|description',
+        exintro: '1',
+        explaintext: '1',
+        exchars: '500',
+        exlimit: '20',
+        piprop: 'thumbnail',
+        pithumbsize: '200',
+        titles: chunk.join('|'),
+      });
+      for (const p of json.query?.pages ?? []) {
+        if (p.missing) continue;
+        cacheSet(`sum:${p.title}`, {
+          title: p.title,
+          description: p.description,
+          extract: p.extract ? cleanExtract(p.extract) : undefined,
+          thumbnail: p.thumbnail,
+        } satisfies Summary);
+      }
+    } catch {
+      chunk.forEach((t) => batched.delete(t)); // try again next time
+    }
+  }
+}
+const batched = new Set<string>();
+
+/**
+ * TextExtracts keeps the pronunciation and foreign-name bracket that the REST summary drops:
+ * "The Parthenon (; Ancient Greek: Παρθενών, …) is a former temple" -> "The Parthenon is a
+ * former temple". Removes brackets in the first sentence that are empty, start with ";" or
+ * hold a "Language: …" note.
+ */
+function cleanExtract(s: string): string {
+  const firstStop = s.search(/[.!?](\s|$)/);
+  const end = firstStop < 0 ? s.length : firstStop;
+  let out = '';
+  let i = 0;
+  while (i < s.length) {
+    if (s[i] === '(' && i < end) {
+      let depth = 0, j = i;
+      for (; j < s.length; j++) {
+        if (s[j] === '(') depth++;
+        else if (s[j] === ')' && --depth === 0) break;
+      }
+      const inner = s.slice(i + 1, j).trim();
+      if (j < s.length && (!inner || inner.startsWith(';') || /^[^()]*?\b[A-Z][a-z]+( [A-Z][a-z]+)?:/.test(inner) || /pronounced|listen|IPA/i.test(inner))) {
+        out = out.replace(/\s+$/, '');
+        i = j + 1;
+        continue;
+      }
+    }
+    out += s[i++];
+  }
+  return out.replace(/\s+([,.;])/g, '$1').trim();
+}
+
 /** Page summary, fetched on demand and cached (memory + localStorage). */
 export function getSummary(title: string): Promise<Summary> {
   const key = `sum:${title}`;

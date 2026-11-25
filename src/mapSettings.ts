@@ -53,7 +53,24 @@ export function initMapSettings(host: HTMLElement, getGlobe: () => Globe | undef
   panel.hidden = true;
   panel.setAttribute('role', 'dialog');
   panel.setAttribute('aria-label', 'Map settings');
-  wrap.append(button, panel);
+  // Opens the globe's current view in Google Maps (its zoom levels are one higher).
+  const gmaps = document.createElement('a');
+  gmaps.className = 'map-settings-btn gmaps-btn';
+  gmaps.target = '_blank';
+  gmaps.rel = 'noopener';
+  gmaps.title = 'Open this view in Google Maps';
+  gmaps.innerHTML = '<svg class="icon" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 14.5s4.8-4.6 4.8-8.1a4.8 4.8 0 0 0-9.6 0c0 3.5 4.8 8.1 4.8 8.1z"/><circle cx="8" cy="6.4" r="1.7"/></svg>Google Maps';
+  const setHref = () => {
+    const v = getGlobe()?.view();
+    gmaps.href = v
+      ? `https://www.google.com/maps/@${v.lat.toFixed(5)},${v.lon.toFixed(5)},${Math.min(21, Math.max(2, v.zoom + 1)).toFixed(1)}z`
+      : 'https://www.google.com/maps';
+  };
+  // Refresh just before it's followed (click, middle-click, keyboard, context menu).
+  for (const ev of ['pointerdown', 'focus', 'mouseenter']) gmaps.addEventListener(ev, setHref);
+  gmaps.addEventListener('click', setHref);
+  setHref();
+  wrap.append(button, gmaps, panel);
   host.append(wrap);
 
   // Hover preview: a small picture of each style (public/map-previews, all the same

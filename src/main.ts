@@ -370,11 +370,20 @@ function renderList(pins: GlobePlace[], emptyText?: string) {
   }));
 }
 
+// A short delay before the globe follows the pointer, so sweeping over rows while
+// scrolling the list doesn't swing the globe from place to place.
+const LIST_HOVER_MS = 120;
+let listHoverTimer = 0;
 listEl.addEventListener('mouseover', (e) => {
   const li = (e.target as Element).closest<HTMLElement>('li[data-title]');
-  if (li) setFocus('list', { kind: 'places', titles: [li.dataset.title!] });
+  if (!li) return;
+  clearTimeout(listHoverTimer);
+  listHoverTimer = window.setTimeout(() => setFocus('list', { kind: 'places', titles: [li.dataset.title!] }), LIST_HOVER_MS);
 });
-listEl.addEventListener('mouseleave', () => setFocus('list', null));
+listEl.addEventListener('mouseleave', () => {
+  clearTimeout(listHoverTimer);
+  setFocus('list', null);
+});
 listEl.addEventListener('click', (e) => {
   const li = (e.target as Element).closest<HTMLElement>('li[data-title]');
   if (li) globe?.select(li.dataset.title!);

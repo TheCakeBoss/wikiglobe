@@ -366,7 +366,9 @@ body.resizing iframe, body.resizing .globe { pointer-events: none; }
 .tl-card p { margin: 0 0 6px; }
 
 /* ---------------------------------------------------------------- map settings */
-.map-settings { position: absolute; top: 10px; left: 10px; z-index: 3; font-size: 13px; }
+.map-settings { position: absolute; top: 10px; left: 10px; z-index: 3; font-size: 13px; display: flex; gap: 6px; align-items: flex-start; }
+.gmaps-btn { text-decoration: none; }
+.map-settings-btn .icon, .card-actions .icon { flex: none; }
 .map-settings-btn {
   display: inline-flex;
   align-items: center;
@@ -453,7 +455,11 @@ body.resizing iframe, body.resizing .globe { pointer-events: none; }
 .cluster-list { margin: 4px 0 6px; padding-left: 1.1em; }
 .cluster-list li { margin: 1px 0; }
 .card-actions { display: flex; gap: 12px; align-items: center; clear: both; padding-top: 6px; border-top: 1px solid var(--border); }
+.card-actions { flex-wrap: wrap; row-gap: 6px; }
 .card-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   font: inherit;
   font-weight: 600;
   padding: 5px 10px;

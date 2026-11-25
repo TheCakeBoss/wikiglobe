@@ -6,7 +6,7 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import { addOverlay, applyRecolour } from './recolour';
 import { MAP_ATTRIBUTION, TERRAIN_ATTRIBUTION, TERRAIN_TILES, type MapStyle } from './config';
-import { getSummary, wikipediaUrl, type Place } from './wiki';
+import { getSummary, prefetchSummaries, wikipediaUrl, type Place, type Summary } from './wiki';
 
 export interface GlobeOptions {
   /** The user chose to open a place's article inside the app. */
@@ -245,6 +245,12 @@ export class Globe {
       if (t) this.select(t);
     });
     m.on('click', 'clusters', (e) => this.zoomIntoCluster(e.features?.[0]));
+    // Once the globe settles, load the cards for the pins in view so hovering them is instant.
+    let settle = 0;
+    m.on('idle', () => {
+      clearTimeout(settle);
+      settle = window.setTimeout(() => this.prefetchVisible(), 250);
+    });
     m.on('click', (e) => {
       // A click on empty globe clears the pinned card.
       if (!m.queryRenderedFeatures(e.point, { layers: ['places', 'clusters'] }).length && this.sticky) {
@@ -431,7 +437,7 @@ export class Globe {
       this.cardKey = null;
       return;
     }
-    if (this.cardKey !== place.title) this.showCard(place, false);
+    if (this.cardKey !== place.title) this.showCard(place);
   }
 
   /** Turns the globe so the place is comfortably in view (no-op if it already is). */
@@ -458,7 +464,7 @@ export class Globe {
     this.interacted = true;
     this.stopSpin();
     this.sticky = true;
-    this.showCard(p, true);
+    this.showCard(p);
     this.map.flyTo({ center: [p.lon, p.lat], zoom: Math.max(this.map.getZoom(), 4), speed: 1.2 });
     this.opts.onSelect?.(p.title);
   }
@@ -491,6 +497,7 @@ export class Globe {
   }
 
   private pointerOn(key: string, enter: () => void) {
+    clearTimeout(this.hideTimer);
     this.interacted = true;
     this.stopSpin();
     this.map.getCanvas().style.cursor = 'pointer';
@@ -499,11 +506,33 @@ export class Globe {
     enter();
   }
 
+  /**
+   * Pointer left a pin or cluster. The card stays up briefly so the pointer can cross the gap
+   * onto it; it closes if the pointer doesn't arrive, or once it leaves the card again.
+   */
   private leave() {
     this.map.getCanvas().style.cursor = '';
     this.hoverKey = null;
-    this.preview(null);
-    this.opts.onHover?.([]);
+    this.scheduleHide();
+  }
+
+  private hideTimer = 0;
+  private scheduleHide() {
+    clearTimeout(this.hideTimer);
+    this.hideTimer = window.setTimeout(() => {
+      if (this.hoverKey) return; // back on a pin
+      this.preview(null);
+      this.opts.onHover?.([]);
+    }, CARD_LINGER_MS);
+  }
+
+  /** The popup's own element: hovering it keeps an unpinned card open. */
+  private wirePopupHover() {
+    const box = this.popup.getElement();
+    if (!box || box.dataset.hoverWired) return;
+    box.dataset.hoverWired = '1';
+    box.addEventListener('mouseenter', () => clearTimeout(this.hideTimer));
+    box.addEventListener('mouseleave', () => { if (!this.hoverKey) this.scheduleHide(); });
   }
 
   private async zoomIntoCluster(f: MapGeoJSONFeature | undefined) {
@@ -528,7 +557,7 @@ export class Globe {
 
   // ------------------------------------------------------------- cards
 
-  private showCard(p: GlobePlace, sticky: boolean) {
+  private showCard(p: GlobePlace) {
     this.cardKey = p.title;
     const card = el('article', 'card');
     const h = el('h3', '', displayTitle(p.title));
@@ -542,24 +571,23 @@ export class Globe {
     // How the article uses this place: known locally, so it shows immediately.
     if (p.snippet) card.append(el('p', 'card-snippet', p.snippet));
     card.append(extract);
-    if (sticky) card.append(this.cardActions(p.title));
-    else if (this.byTitle.has(p.title)) card.append(el('p', 'card-hint', 'Click the pin to jump to it in the article'));
+    // Hover and pinned cards are the same, buttons included: the pointer can move from the
+    // pin onto a hover card and use them (see leave()).
+    const actions = this.cardActions(p);
+    card.append(actions);
     this.popup.setLngLat([p.lon, p.lat]).setDOMContent(card).addTo(this.map);
+    this.wirePopupHover();
 
     const current = () => this.cardKey === p.title;
     const reanchor = () => { if (current()) this.popup.setLngLat([p.lon, p.lat]); };
     getSummary(p.title).then(
       (s) => {
         if (!current()) return; // moved on
-        if (s.thumbnail) {
-          const img = el('img', 'card-thumb');
-          img.src = s.thumbnail.source;
-          img.alt = '';
-          img.width = Math.min(s.thumbnail.width, 96);
-          img.addEventListener('load', reanchor, { once: true });
-          card.prepend(img);
-        }
+        if (s.thumbnail) card.prepend(thumbImg(s.thumbnail, reanchor));
         desc.textContent = s.description ?? '';
+        if (actions && canStreetView(p, s.description)) {
+          actions.append(link('Street View ↗', streetViewUrl(p), 'Look around in Google Street View (opens the nearest imagery)'));
+        }
         extract.replaceChildren();
         if (s.extract) extract.append(el('p', '', truncate(s.extract, p.snippet ? 180 : 260)));
         // The card grew: re-run MapLibre's auto-anchoring so it isn't clipped at the edge.
@@ -583,17 +611,51 @@ export class Globe {
     this.popup.setLngLat(at.coordinates as [number, number]).setDOMContent(card).addTo(this.map);
   }
 
-  private cardActions(title: string) {
+  private cardActions(p: GlobePlace) {
     const row = el('div', 'card-actions');
-    const open = el('button', '', 'Map this article');
+    const open = el('button', '');
     open.type = 'button';
-    open.addEventListener('click', () => this.opts.onOpen(title));
-    const wp = el('a', '', 'Wikipedia ↗');
-    wp.href = wikipediaUrl(title);
-    wp.target = '_blank';
-    wp.rel = 'noopener';
-    row.append(open, wp);
+    open.title = 'Open this article on the globe';
+    open.innerHTML = `${GLOBE_ICON}<span>Globe</span>`;
+    open.addEventListener('click', () => this.opts.onOpen(p.title));
+    row.append(open, link('Wikipedia ↗', wikipediaUrl(p.title), 'Read the article on Wikipedia'));
+    // A Street View link is added once the place's description is in (see showCard).
     return row;
+  }
+
+  /**
+   * Summaries (one request per 20 places) and thumbnails for the unclustered pins on screen
+   * and the 20 top-ranked pins, at most PREFETCH_PINS per settle. Cached places cost nothing.
+   */
+  private prefetchVisible() {
+    if (!this.map.getLayer('places')) return;
+    const inView = this.map
+      .queryRenderedFeatures({ layers: ['places'] })
+      .sort((a, b) => (b.properties.w ?? 0) - (a.properties.w ?? 0))
+      .map((f) => f.properties.title as string);
+    // Plus the top-ranked pins, which the place list previews on hover wherever they are.
+    const top = [...this.byTitle.values()]
+      .sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0))
+      .slice(0, 20)
+      .map((p) => p.title);
+    const titles = [...new Set([...inView, ...top])].slice(0, PREFETCH_PINS);
+    if (!titles.length) return;
+    void prefetchSummaries(titles).then(async () => {
+      // Warm the browser's image cache too: the thumbnail is the biggest thing that pops in.
+      for (const t of titles) {
+        const s = await getSummary(t).catch(() => undefined);
+        if (s?.thumbnail && !preloaded.has(s.thumbnail.source)) {
+          preloaded.add(s.thumbnail.source);
+          new Image().src = s.thumbnail.source;
+        }
+      }
+    });
+  }
+
+  /** Where the camera is looking, for opening the same view elsewhere. */
+  view(): { lat: number; lon: number; zoom: number } {
+    const c = this.map.getCenter();
+    return { lat: c.lat, lon: c.lng, zoom: this.map.getZoom() };
   }
 
   // ------------------------------------------------------------- idle spin
@@ -654,6 +716,69 @@ function densestArea(places: GlobePlace[]): Place[] {
   }
   return places.filter((q) => distanceKm(best, q) <= AREA_RADII_KM.at(-1)!);
 }
+
+/** Most pins whose cards are prefetched each time the globe settles (3 requests). */
+const PREFETCH_PINS = 60;
+const preloaded = new Set<string>();
+
+/** Card thumbnail with its final size set up front, so the card doesn't reflow when it loads. */
+function thumbImg(t: NonNullable<Summary['thumbnail']>, onLoad: () => void) {
+  const img = el('img', 'card-thumb');
+  img.alt = '';
+  img.width = Math.min(t.width, 96);
+  img.height = Math.round((img.width / t.width) * t.height);
+  img.addEventListener('load', onLoad, { once: true });
+  img.src = t.source;
+  return img;
+}
+
+/** How long a hover card waits for the pointer to reach it after leaving the pin. */
+const CARD_LINGER_MS = 350;
+
+/** Small globe outline for the card's "Globe" button. */
+const GLOBE_ICON = '<svg class="icon" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6.3"/><ellipse cx="8" cy="8" rx="2.7" ry="6.3"/><path d="M1.9 6h12.2M1.9 10h12.2"/></svg>';
+
+const link = (text: string, href: string, title: string) => {
+  const a = el('a', '', text);
+  a.href = href;
+  a.target = '_blank';
+  a.rel = 'noopener';
+  a.title = title;
+  return a;
+};
+
+/**
+ * Whether a place is something you could stand in front of (a building, monument, station,
+ * park), so Street View is worth offering. Wikipedia's coordinate `type` settles it when set,
+ * but it's often missing (the Eiffel Tower and Athens both have none, both "1 km" across), so
+ * otherwise the short description decides: "Capital and largest city of Greece" is an area,
+ * "Lattice tower in Paris" isn't. Only the head of the description counts, before "in"/"of".
+ */
+const AREA_TYPES = new Set([
+  'country', 'satellite', 'state', 'adm1st', 'adm2nd', 'adm3rd', 'city', 'isle', 'waterbody',
+  'river', 'mountain', 'glacier', 'forest', 'event', 'airport',
+]);
+const AREA_WORDS = new RegExp(`\\b(${[
+  'city', 'cities', 'town', 'village', 'hamlet', 'capital', 'suburb', 'neighbou?rhood', 'borough',
+  'district', 'municipality', 'commune', 'county', 'state', 'province', 'prefecture', 'oblast',
+  'canton', 'region', 'territory', 'country', 'nation', 'settlement', 'locality', 'metropolitan',
+  'island', 'islands', 'archipelago', 'peninsula', 'river', 'lake', 'sea', 'ocean', 'bay', 'gulf',
+  'strait', 'mountain', 'mountains', 'range', 'volcano', 'valley', 'desert', 'forest', 'plateau',
+  'plain', 'area', 'empire', 'kingdom', 'dynasty',
+].join('|')})\\b`, 'i');
+function canStreetView(p: Place, description?: string): boolean {
+  const type = p.type?.toLowerCase().replace(/\(.*\)$/, '');
+  if (type && AREA_TYPES.has(type)) return false;
+  if ((p.dim ?? 1000) > 2000) return false; // e.g. the Grand Canyon, tagged "landmark"
+  if (type === 'landmark' || type === 'edu' || type === 'railwaystation') return true;
+  if (!description) return false;
+  const head = description.split(/\s(?:in|of|on|at|near|within|for)\s|,|;/)[0];
+  return !AREA_WORDS.test(head);
+}
+
+/** Google Maps URL that opens Street View at the nearest imagery to a point. */
+const streetViewUrl = (p: { lat: number; lon: number }) =>
+  `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${p.lat.toFixed(6)},${p.lon.toFixed(6)}`;
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls: string, text?: string) {
   const e = document.createElement(tag);
