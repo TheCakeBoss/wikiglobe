@@ -1,4 +1,5 @@
 import { NON_PROSE } from './article';
+import { BLOCK, snippetAround } from './sentence';
 import type { Place } from './wiki';
 
 /** Weights for the relevance score. */
@@ -45,6 +46,10 @@ const norm = (t: string) => {
 export class ArticleIndex {
   private byTitle = new Map<string, LinkInfo>();
   private proseText: string;
+  /** proseText lower-cased once, for fast mention counting. */
+  private proseLower: string;
+  /** Per-place results, reused when scoring again (each batch of places, each slider move). */
+  private cache = new Map<string, Omit<ScoredPlace, keyof Place> | null>();
 
   constructor(root: HTMLElement) {
     for (const a of root.querySelectorAll<HTMLAnchorElement>('a.wl[data-title]')) {
@@ -60,6 +65,7 @@ export class ArticleIndex {
       this.byTitle.set(key, info);
     }
     this.proseText = proseTextOf(root);
+    this.proseLower = this.proseText.toLowerCase();
   }
 
   /**
@@ -70,27 +76,45 @@ export class ArticleIndex {
     const ranked: ScoredPlace[] = [];
     const unlinked: Place[] = [];
     for (const p of places) {
-      const info = this.infoFor(p);
-      if (!info) {
-        unlinked.push(p);
-        continue;
+      let s = this.cache.get(p.title);
+      if (s === undefined) {
+        s = this.scoreOne(p);
+        this.cache.set(p.title, s);
       }
-      const mentions = Math.max(...[p.title, ...(p.aliases ?? [])].map((t) => countMentions(this.proseText, t)));
-      const score =
-        info.anchors.length * W.link +
-        (info.lead ? W.lead : 0) +
-        (info.infobox ? W.infobox : 0) +
-        (info.main ? W.main : 0) +
-        Math.min(mentions, W.mentionCap) * W.mention;
-      // Tag every link to this place so the UI can find its mentions.
-      for (const a of info.anchors) a.dataset.place = p.title;
-      ranked.push({
-        ...p, score, links: info.anchors.length, lead: info.lead, infobox: info.infobox, main: info.main, mentions,
-        snippet: snippetFor(info.anchors),
-      });
+      if (s) ranked.push(withLazySnippet({ ...p, ...s }, s));
+      else unlinked.push(p);
     }
     ranked.sort((a, b) => b.score - a.score || b.mentions - a.mentions || a.title.localeCompare(b.title));
     return { ranked, unlinked };
+  }
+
+  private scoreOne(p: Place): Omit<ScoredPlace, keyof Place> | null {
+    const info = this.infoFor(p);
+    if (!info) return null;
+    let mentions = 0;
+    for (const t of [p.title, ...(p.aliases ?? [])]) {
+      mentions = Math.max(mentions, countMentions(this.proseText, this.proseLower, t));
+    }
+    const score =
+      info.anchors.length * W.link +
+      (info.lead ? W.lead : 0) +
+      (info.infobox ? W.infobox : 0) +
+      (info.main ? W.main : 0) +
+      Math.min(mentions, W.mentionCap) * W.mention;
+    // Tag every link to this place so the UI can find its mentions.
+    for (const a of info.anchors) a.dataset.place = p.title;
+    // The snippet (sentence splitting is the slow part) is worked out only when first read,
+    // which for most places is never: only pinned places show it.
+    let snippet: string | undefined | null = null;
+    const result: Omit<ScoredPlace, keyof Place> = {
+      score, links: info.anchors.length, lead: info.lead, infobox: info.infobox, main: info.main, mentions,
+    };
+    // Not enumerable here, so spreading `result` doesn't evaluate it; withLazySnippet re-exposes it.
+    Object.defineProperty(result, 'snippet', {
+      get: () => (snippet === null ? (snippet = snippetFor(info.anchors)) : snippet),
+      enumerable: false,
+    });
+    return result;
   }
 
   /**
@@ -136,10 +160,34 @@ function plainName(title: string): string {
   return title.replace(/\s*\(.*\)$/, '').split(',')[0].trim();
 }
 
-const mentionCache = new Map<string, RegExp>();
-function countMentions(text: string, title: string): number {
+/** Copies the snippet getter onto a spread copy (spreading reads it, which defeats the laziness). */
+function withLazySnippet<T extends object>(target: T, source: { snippet?: string }): T {
+  Object.defineProperty(target, 'snippet', { get: () => source.snippet, enumerable: true, configurable: true });
+  return target;
+}
+
+const isWordChar = (c: string | undefined) => !!c && /[\p{L}\p{N}]/u.test(c);
+
+/**
+ * Whole-word mentions of a place's name. First letter exact (so "nice" isn't Nice), the rest
+ * case-insensitive ("ANZAC Cove" = "Anzac Cove"). Searches the lower-cased text with indexOf,
+ * which is several times faster than a Unicode-aware regex per place.
+ */
+function countMentions(text: string, lower: string, title: string): number {
   const name = plainName(title);
   if (name.length < 4) return 0; // too ambiguous
+  const needle = name.toLowerCase();
+  // Lower-casing changed some lengths (rare letters like "İ"): offsets no longer line up.
+  if (needle.length !== name.length || lower.length !== text.length) return countMentionsRegex(text, name);
+  let n = 0;
+  for (let i = lower.indexOf(needle); i >= 0; i = lower.indexOf(needle, i + 1)) {
+    if (text[i] === name[0] && !isWordChar(text[i - 1]) && !isWordChar(text[i + needle.length])) n++;
+  }
+  return n;
+}
+
+const mentionCache = new Map<string, RegExp>();
+function countMentionsRegex(text: string, name: string): number {
   let re = mentionCache.get(name);
   if (!re) {
     // First letter exact (so "nice" isn't Nice), the rest case-insensitive ("ANZAC Cove" = "Anzac Cove").
@@ -152,48 +200,13 @@ function countMentions(text: string, title: string): number {
   return text.match(re)?.length ?? 0;
 }
 
-const segmenter = typeof Intl !== 'undefined' && 'Segmenter' in Intl
-  ? new Intl.Segmenter('en', { granularity: 'sentence' })
-  : null;
-
 /** First link in running text (not the infobox, a hatnote, a table or a caption). */
 function proseAnchor(anchors: HTMLAnchorElement[]): HTMLAnchorElement | undefined {
-  return anchors.find((x) => !x.closest('.infobox, .hatnote, table, figure') && x.closest('p, li, dd, blockquote'));
+  return anchors.find((x) => !x.closest('.infobox, .hatnote, table, figure') && x.closest(BLOCK));
 }
 
 /** The sentence containing the first link that sits in running text. */
 function snippetFor(anchors: HTMLAnchorElement[]): string | undefined {
   const a = proseAnchor(anchors);
-  if (!a) return undefined;
-  const block = a.closest('p, li, dd, blockquote')!;
-
-  // Text of the block without footnote markers, and where the link starts within it.
-  let text = '';
-  let offset = -1;
-  const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT, {
-    acceptNode: (n) => (n.parentElement?.closest('.mw-ref, sup.reference, style') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
-  });
-  while (walker.nextNode()) {
-    if (offset < 0 && a.contains(walker.currentNode)) offset = text.length;
-    text += walker.currentNode.nodeValue;
-  }
-  if (offset < 0) return undefined;
-
-  let sentence = text;
-  let linkAt = offset; // link position within `sentence`
-  if (segmenter) {
-    for (const seg of segmenter.segment(text)) {
-      if (offset >= seg.index && offset < seg.index + seg.segment.length) {
-        sentence = seg.segment;
-        linkAt = offset - seg.index;
-        break;
-      }
-    }
-  }
-  if (sentence.length > 300) {
-    // Very long sentence: keep the start if the link is near it, else window around the link.
-    const start = linkAt < 200 ? 0 : linkAt - 120;
-    sentence = (start > 0 ? '…' : '') + sentence.slice(start, start + 280).trim() + '…';
-  }
-  return sentence.replace(/\s+/g, ' ').trim() || undefined;
+  return a && snippetAround(a);
 }

@@ -6,6 +6,11 @@
     <meta name="description" content="Read a Wikipedia article next to a globe of every place it links to." />
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌍</text></svg>" />
     <title>Wikipedia Globe</title>
+    <!-- Open connections to the API and tile servers while the app starts (each saves a
+         connection setup, 1–2 round trips, on the first request to that host). -->
+    <link rel="preconnect" href="https://en.wikipedia.org" crossorigin />
+    <link rel="preconnect" href="https://tiles.openfreemap.org" crossorigin />
+    <link rel="dns-prefetch" href="https://upload.wikimedia.org" />
   </head>
   <body>
     <header class="topbar">
@@ -33,21 +38,37 @@
     </main>
 
     <main id="viewer" class="viewer" hidden>
-      <section class="article-pane">
-        <h1 id="article-title"></h1>
-        <p id="article-desc" class="article-desc"></p>
-        <div class="controls">
-          <span id="place-count" class="place-count" aria-live="polite"></span>
+      <aside id="list-pane" class="list-pane" aria-label="Places in this article">
+        <div class="list-head">
           <label class="top-n" title="How many of the most relevant places to pin">
             Top <input id="top-n" type="range" min="10" max="200" step="10" value="40" /> <output id="top-n-out">40</output>
           </label>
-          <label class="toggle"><input id="show-large" type="checkbox" /> Countries &amp; large regions</label>
+          <button id="list-toggle" class="list-toggle" type="button" aria-expanded="true" aria-controls="place-list" title="Hide the place list">«</button>
         </div>
+        <ol id="place-list" class="place-list"></ol>
+        <section id="history" class="history" aria-labelledby="history-title" hidden>
+          <div class="history-head">
+            <h2 id="history-title">History</h2>
+            <button id="history-clear" class="history-clear" type="button">Clear</button>
+          </div>
+          <ol id="history-list" class="history-list"></ol>
+        </section>
+      </aside>
+      <div id="list-divider" class="divider" role="separator" aria-orientation="vertical" aria-label="Resize the place list" tabindex="0"></div>
+      <section class="article-pane">
+        <h1 id="article-title"></h1>
+        <p id="article-desc" class="article-desc"></p>
         <div id="article-body" class="article-body"></div>
+        <button id="mention-chip" class="mention-chip" type="button" hidden></button>
+        <div id="mention-pos" class="mention-pos" role="status" hidden></div>
       </section>
+      <div id="divider" class="divider" role="separator" aria-orientation="vertical" aria-label="Resize article and globe" tabindex="0"></div>
       <section class="globe-pane">
-        <div id="globe" class="globe" tabindex="0" aria-label="Interactive globe of linked places"></div>
-        <div id="globe-status" class="globe-status" hidden></div>
+        <div class="globe-wrap">
+          <div id="globe" class="globe" tabindex="0" aria-label="Interactive globe of linked places"></div>
+          <div id="globe-status" class="globe-status" hidden></div>
+        </div>
+        <div id="timeline" class="timeline" hidden></div>
       </section>
     </main>
 

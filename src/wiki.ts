@@ -1,5 +1,5 @@
-import { ACTION_API, API_USER_AGENT, REST_API, WIKI_HOST } from './config';
-import { cacheGet, cacheSet } from './cache';
+import { ACTION_API, REST_API, WIKI_HOST } from './config';
+import { bigCacheGet, bigCacheSet, cacheGet, cacheSet } from './cache';
 
 export interface Coord {
   lat: number;
@@ -36,12 +36,11 @@ export interface Summary {
 
 export class NotFoundError extends Error {}
 
-const headers = { 'Api-User-Agent': API_USER_AGENT };
 
 async function actionQuery(params: Record<string, string>, signal?: AbortSignal): Promise<any> {
   const url = new URL(ACTION_API);
   url.search = new URLSearchParams({ format: 'json', formatversion: '2', origin: '*', ...params }).toString();
-  const res = await fetch(url, { headers, signal });
+  const res = await fetch(url, { signal });
   if (!res.ok) throw new Error(`Wikipedia API error ${res.status}`);
   const json = await res.json();
   if (json.error) throw new Error(json.error.info ?? 'Wikipedia API error');
@@ -79,7 +78,7 @@ export async function opensearch(q: string, signal?: AbortSignal): Promise<strin
   url.search = new URLSearchParams({
     action: 'opensearch', search: q, limit: '8', namespace: '0', format: 'json', origin: '*',
   }).toString();
-  const res = await fetch(url, { headers, signal });
+  const res = await fetch(url, { signal });
   const json = (await res.json()) as [string, string[]];
   cacheSet(key, json[1], false);
   return json[1];
@@ -103,9 +102,11 @@ async function fetchPrimary(title: string, signal?: AbortSignal) {
 }
 
 /**
- * All linked articles with coordinates, following `continue` until done.
- * `onBatch` gets the places found so far after each response, so pins can appear
- * before a link-heavy article (Melbourne has ~3,000 links) has finished loading.
+ * All linked articles with coordinates. Wikipedia returns links 500 at a time and only says
+ * where the next batch starts once the previous one has arrived, so a link-heavy article
+ * (Melbourne has ~1,600 links) needs several round trips. To halve that, two chains run at
+ * once, one from A forwards and one from Z backwards, and stop when they meet.
+ * `onBatch` gets the places found so far after each response, so pins can appear early.
  */
 async function fetchLinkedPlaces(
   title: string,
@@ -114,6 +115,12 @@ async function fetchLinkedPlaces(
 ): Promise<Place[]> {
   const pages = new Map<number, { title: string; coords: Coord[] }>();
   const aliases = new Map<string, Set<string>>();
+  // Which chain first saw each page; a chain stops once it reaches pages the other has seen.
+  const seenBy = new Map<number, 'asc' | 'desc'>();
+  let met = false;
+  // Once the chains meet, the other chain's request in flight is no longer needed.
+  const stop = new AbortController();
+  signal?.addEventListener('abort', () => stop.abort());
 
   const collect = (): Place[] => {
     const places: Place[] = [];
@@ -127,39 +134,65 @@ async function fetchLinkedPlaces(
     return places;
   };
 
-  let cont: Record<string, string> = {};
-  for (let guard = 0; guard < 50; guard++) {
-    const json = await actionQuery(
-      {
-        action: 'query',
-        generator: 'links',
-        titles: title,
-        gplnamespace: '0',
-        gpllimit: 'max',
-        // Resolves the input title if it's a redirect, and redirecting links
-        // ("Anzac Cove" -> "ANZAC Cove") so they get coordinates.
-        redirects: '1',
-        prop: 'coordinates',
-        colimit: 'max',
-        coprop: 'type|dim|globe',
-        ...cont,
-      },
-      signal,
-    );
-    for (const r of json.query?.redirects ?? []) {
-      if (!aliases.has(r.to)) aliases.set(r.to, new Set());
-      aliases.get(r.to)!.add(r.from);
+  const chain = async (dir: 'asc' | 'desc') => {
+    let cont: Record<string, string> = {};
+    for (let guard = 0; guard < 50 && !met; guard++) {
+      let json;
+      try {
+        json = await actionQuery(
+          {
+            action: 'query',
+            generator: 'links',
+            titles: title,
+            gplnamespace: '0',
+            gpllimit: 'max',
+            gpldir: dir === 'asc' ? 'ascending' : 'descending',
+            // Resolves the input title if it's a redirect, and redirecting links
+            // ("Anzac Cove" -> "ANZAC Cove") so they get coordinates.
+            redirects: '1',
+            prop: 'coordinates',
+            colimit: 'max',
+            coprop: 'type|dim|globe',
+            ...cont,
+          },
+          stop.signal,
+        );
+      } catch (err) {
+        if (met && !signal?.aborted) return; // cancelled because the other chain finished the job
+        throw err;
+      }
+      if (met) return;
+      for (const r of json.query?.redirects ?? []) {
+        if (!aliases.has(r.to)) aliases.set(r.to, new Set());
+        aliases.get(r.to)!.add(r.from);
+      }
+      // Only pages linked directly count towards meeting: a redirect ("Birrarung" -> "Yarra
+      // River") can land anywhere in the alphabet.
+      const viaRedirect = new Set<string>((json.query?.redirects ?? []).map((r: { to: string }) => r.to));
+      let overlap = false;
+      for (const p of json.query?.pages ?? []) {
+        if (p.missing) continue;
+        if (!viaRedirect.has(p.title)) {
+          const by = seenBy.get(p.pageid);
+          if (by && by !== dir) overlap = true;
+          else if (!by) seenBy.set(p.pageid, dir);
+        }
+        const entry = pages.get(p.pageid) ?? { title: p.title as string, coords: [] as Coord[] };
+        // The same page can arrive from both chains; keep its coordinates once.
+        if (p.coordinates && !entry.coords.length) entry.coords.push(...p.coordinates);
+        pages.set(p.pageid, entry);
+      }
+      // A coordinate-only continuation (cocontinue) must be followed to finish this batch.
+      if (!json.continue || (overlap && !json.continue.cocontinue)) {
+        met = true;
+        stop.abort();
+        break;
+      }
+      cont = json.continue;
+      onBatch?.(collect());
     }
-    for (const p of json.query?.pages ?? []) {
-      if (p.missing) continue;
-      const entry = pages.get(p.pageid) ?? { title: p.title as string, coords: [] as Coord[] };
-      if (p.coordinates) entry.coords.push(...p.coordinates);
-      pages.set(p.pageid, entry);
-    }
-    if (!json.continue) break;
-    cont = json.continue;
-    onBatch?.(collect());
-  }
+  };
+  await Promise.all([chain('asc'), chain('desc')]);
   return collect();
 }
 
@@ -172,23 +205,52 @@ export interface LoadProgress {
 /**
  * Loads an article's primary coordinate and linked places. The two queries run in
  * parallel; `onProgress` fires once the primary is known and again per batch of links.
+ * A load already in flight (for example a hover prefetch) is shared rather than repeated,
+ * and keeps going if the caller navigates away, so its result still lands in the cache.
  */
-export async function loadArticle(
+export function loadArticle(
   input: string,
   signal?: AbortSignal,
   onProgress?: (p: LoadProgress) => void,
 ): Promise<ArticleData> {
   const key = `art:${input.toLowerCase()}`;
-  const hit = cacheGet<ArticleData>(key);
-  if (hit) return hit;
+  let job = articleJobs.get(key);
+  if (!job) {
+    const j: ArticleJob = { listeners: new Set(), promise: undefined! };
+    const report = (p: LoadProgress) => {
+      j.latest = p;
+      j.listeners.forEach((l) => l(p));
+    };
+    j.promise = (async () => (await bigCacheGet<ArticleData>(key)) ?? fetchArticle(input, report))()
+      .finally(() => articleJobs.delete(key));
+    articleJobs.set(key, (job = j));
+  }
+  if (onProgress) {
+    const j = job;
+    if (j.latest) onProgress(j.latest);
+    j.listeners.add(onProgress);
+    signal?.addEventListener('abort', () => j.listeners.delete(onProgress));
+    j.promise.finally(() => j.listeners.delete(onProgress));
+  }
+  return job.promise;
+}
 
-  const primaryP = fetchPrimary(input, signal);
+interface ArticleJob {
+  promise: Promise<ArticleData>;
+  listeners: Set<(p: LoadProgress) => void>;
+  latest?: LoadProgress;
+}
+const articleJobs = new Map<string, ArticleJob>();
+
+async function fetchArticle(input: string, onProgress: (p: LoadProgress) => void): Promise<ArticleData> {
+  const key = `art:${input.toLowerCase()}`;
+  const primaryP = fetchPrimary(input);
   let latest: Place[] = [];
   let head: { title: string; primary?: { lat: number; lon: number } } | undefined;
-  const report = () => head && onProgress?.({ ...head, places: latest });
+  const report = () => head && onProgress({ ...head, places: latest });
   primaryP.then((h) => { head = h; report(); }, () => {});
 
-  const placesP = fetchLinkedPlaces(input, signal, (so) => {
+  const placesP = fetchLinkedPlaces(input, undefined, (so) => {
     const h = head;
     latest = h ? so.filter((p) => p.title !== h.title) : so;
     report();
@@ -197,8 +259,8 @@ export async function loadArticle(
   const [{ title, primary }, places] = await Promise.all([primaryP, placesP]);
 
   const data: ArticleData = { title, primary, places: places.filter((p) => p.title !== title) };
-  cacheSet(key, data);
-  if (title.toLowerCase() !== input.toLowerCase()) cacheSet(`art:${title.toLowerCase()}`, data);
+  void bigCacheSet(key, data);
+  if (title.toLowerCase() !== input.toLowerCase()) void bigCacheSet(`art:${title.toLowerCase()}`, data);
   return data;
 }
 
@@ -213,7 +275,7 @@ export function getSummary(title: string): Promise<Summary> {
   if (hit) return Promise.resolve(hit);
   let p = inflight.get(key);
   if (!p) {
-    p = fetch(`${REST_API}/page/summary/${encodeURIComponent(toPageParam(title))}`, { headers })
+    p = fetch(`${REST_API}/page/summary/${encodeURIComponent(toPageParam(title))}`)
       .then((r) => {
         if (!r.ok) throw new Error(`summary ${r.status}`);
         return r.json();

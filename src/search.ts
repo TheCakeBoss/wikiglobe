@@ -1,4 +1,5 @@
 import { opensearch, parseTitleInput } from './wiki';
+import { prefetch } from './prefetch';
 
 /**
  * Wires a text input to opensearch autocomplete. `onPick` receives a title
@@ -19,6 +20,12 @@ export function attachSearch(form: HTMLFormElement, onPick: (title: string) => v
   let active = -1;
   let timer: number | undefined;
   let ctrl: AbortController | undefined;
+  // Prefetch the suggestion the user rests on (mouse or arrow keys).
+  let prefetchTimer: number | undefined;
+  const prefetchSoon = (t: string) => {
+    window.clearTimeout(prefetchTimer);
+    prefetchTimer = window.setTimeout(() => prefetch(t), 200);
+  };
 
   const render = () => {
     list.replaceChildren(
@@ -27,6 +34,8 @@ export function attachSearch(form: HTMLFormElement, onPick: (title: string) => v
         li.textContent = t;
         li.setAttribute('role', 'option');
         li.setAttribute('aria-selected', String(i === active));
+        li.addEventListener('mouseenter', () => prefetchSoon(t));
+        li.addEventListener('mouseleave', () => window.clearTimeout(prefetchTimer));
         li.addEventListener('mousedown', (e) => {
           e.preventDefault(); // keep focus; fire before blur
           pick(t);
@@ -76,6 +85,7 @@ export function attachSearch(form: HTMLFormElement, onPick: (title: string) => v
       if (e.key === 'ArrowDown') active = active + 1 >= n ? -1 : active + 1;
       else active = active - 1 < -1 ? n - 1 : active - 1;
       render();
+      if (active >= 0) prefetchSoon(items[active]);
     } else if (e.key === 'Escape') {
       close();
     }
