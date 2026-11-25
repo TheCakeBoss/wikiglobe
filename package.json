@@ -17,5 +17,8 @@
     "@types/geojson": "^7946.0.16",
     "typescript": "^7.0.2",
     "vite": "^8.3.8"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }
